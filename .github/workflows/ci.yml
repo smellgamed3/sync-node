@@ -28,3 +28,18 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Build container image
+        run: docker build -t filesync-kubo:ci .
+
+      - name: Smoke test container
+        run: |
+          docker run -d --name filesync-kubo-ci -p 8384:8384 filesync-kubo:ci
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:8384/api/status; then
+              exit 0
+            fi
+            sleep 3
+          done
+          docker logs filesync-kubo-ci
+          exit 1
