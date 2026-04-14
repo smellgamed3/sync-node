@@ -1,0 +1,8 @@
+node_modules
+.git
+.github
+.npm-local
+filesync-kubo-*.tgz
+coverage
+dist
+.filesync

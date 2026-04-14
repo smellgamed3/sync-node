@@ -1,0 +1,16 @@
+services:
+  filesync:
+    image: ${FILESYNC_IMAGE:-filesync-kubo:local}
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      - IPFS_API=${IPFS_API:-http://host.docker.internal:5001/api/v0}
+      - FILESYNC_HOME=/app/.filesync
+    ports:
+      - "8384:8384"
+    volumes:
+      - filesync_data:/app/.filesync
+
+volumes:
+  filesync_data:

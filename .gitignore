@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.filesync/
+.npm-local/
+*.tgz
+*.log
+coverage/
