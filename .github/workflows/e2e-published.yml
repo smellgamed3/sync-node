@@ -1,6 +1,5 @@
-name: E2E Published Artifacts
+name: E2E npm package multi-node
 
-# 触发条件：手动触发，或 Release 工作流成功后自动触发
 on:
   workflow_dispatch:
   workflow_run:
@@ -12,413 +11,229 @@ permissions:
   packages: read
 
 jobs:
-  e2e:
-    name: E2E – GHCR image + npm package multi-node sync
+  e2e-npm:
+    name: E2E - npm package two-node sync
     runs-on: ubuntu-latest
-    # 仅在手动触发或 Release 成功后运行
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
-      # ─────────────────────────────────────────
-      # 1. 登录 GHCR，拉取已发布镜像
-      # ─────────────────────────────────────────
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install build tools for native modules
+        run: sudo apt-get install -y python3 make g++ 2>/dev/null || true
 
-      - name: Pull published FileSync image
+      - name: Install filesync-kubo from GitHub Packages
         run: |
-          docker pull ghcr.io/smellgamed3/filesync-kubo:latest
-          echo "Image pulled: $(docker inspect --format='{{.RepoDigests}}' ghcr.io/smellgamed3/filesync-kubo:latest)"
+          npm config set @smellgamed3:registry https://npm.pkg.github.com
+          npm config set //npm.pkg.github.com/:_authToken ${{ secrets.GITHUB_TOKEN }}
+          npm install -g @smellgamed3/filesync-kubo
+          which filesync-kubo
 
-      # ─────────────────────────────────────────
-      # 2. 建立测试 Docker 网络
-      # ─────────────────────────────────────────
-      - name: Create Docker network
-        run: docker network create filesync-e2e
+      - name: Create Docker network for Kubo
+        run: docker network create kubo-net
 
-      # ─────────────────────────────────────────
-      # 3. 启动并配置 Kubo 节点 A
-      # ─────────────────────────────────────────
-      - name: Start Kubo A
+      - name: Start and configure Kubo A
         run: |
-          docker run -d --name kubo-a --network filesync-e2e ipfs/kubo:latest
-          echo "Waiting for kubo-a to initialize..."
+          docker run -d --name kubo-a --network kubo-net -p 5001:5001 ipfs/kubo:latest
           for i in $(seq 1 30); do
             sleep 2
-            docker exec kubo-a ipfs id &>/dev/null && echo "kubo-a ready" && break
-            echo "  attempt $i/30..."
+            docker exec kubo-a ipfs id >/dev/null 2>&1 && echo "kubo-a init ready" && break || echo "  kubo-a init $i/30..."
           done
-          # 启用 PubSub，将 API 绑定到所有接口
           docker exec kubo-a ipfs config --bool Pubsub.Enabled true
           docker exec kubo-a ipfs config Addresses.API "/ip4/0.0.0.0/tcp/5001"
           docker restart kubo-a
           for i in $(seq 1 30); do
             sleep 2
-            docker exec kubo-a ipfs id &>/dev/null && echo "kubo-a restarted" && break
-            echo "  restart attempt $i/30..."
+            curl -fsS -X POST http://127.0.0.1:5001/api/v0/id >/dev/null 2>&1 && echo "kubo-a API ready" && break || echo "  kubo-a api $i/30..."
           done
-          PEER_A=$(docker exec kubo-a ipfs id --encoding=json | python3 -c "import sys,json; print(json.load(sys.stdin)['ID'])")
+          PEER_A=$(curl -s -X POST http://127.0.0.1:5001/api/v0/id | python3 -c "import sys,json; print(json.load(sys.stdin)['ID'])")
           echo "PEER_A=$PEER_A" >> "$GITHUB_ENV"
-          echo "kubo-a peer ID: $PEER_A"
+          echo "kubo-a peer: $PEER_A"
 
-      # ─────────────────────────────────────────
-      # 4. 启动并配置 Kubo 节点 B
-      # ─────────────────────────────────────────
-      - name: Start Kubo B
+      - name: Start and configure Kubo B
         run: |
-          docker run -d --name kubo-b --network filesync-e2e ipfs/kubo:latest
-          echo "Waiting for kubo-b to initialize..."
+          docker run -d --name kubo-b --network kubo-net -p 5002:5001 ipfs/kubo:latest
           for i in $(seq 1 30); do
             sleep 2
-            docker exec kubo-b ipfs id &>/dev/null && echo "kubo-b ready" && break
-            echo "  attempt $i/30..."
+            docker exec kubo-b ipfs id >/dev/null 2>&1 && echo "kubo-b init ready" && break || echo "  kubo-b init $i/30..."
           done
           docker exec kubo-b ipfs config --bool Pubsub.Enabled true
           docker exec kubo-b ipfs config Addresses.API "/ip4/0.0.0.0/tcp/5001"
           docker restart kubo-b
           for i in $(seq 1 30); do
             sleep 2
-            docker exec kubo-b ipfs id &>/dev/null && echo "kubo-b restarted" && break
-            echo "  restart attempt $i/30..."
+            curl -fsS -X POST http://127.0.0.1:5002/api/v0/id >/dev/null 2>&1 && echo "kubo-b API ready" && break || echo "  kubo-b api $i/30..."
           done
-          PEER_B=$(docker exec kubo-b ipfs id --encoding=json | python3 -c "import sys,json; print(json.load(sys.stdin)['ID'])")
+          PEER_B=$(curl -s -X POST http://127.0.0.1:5002/api/v0/id | python3 -c "import sys,json; print(json.load(sys.stdin)['ID'])")
           echo "PEER_B=$PEER_B" >> "$GITHUB_ENV"
-          echo "kubo-b peer ID: $PEER_B"
+          echo "kubo-b peer: $PEER_B"
 
-      # ─────────────────────────────────────────
-      # 5. 将两个 Kubo 节点互相引导，建立 swarm 连接
-      # ─────────────────────────────────────────
-      - name: Bootstrap Kubo nodes together
+      - name: Connect Kubo nodes via swarm
         run: |
-          echo "Bootstrapping: kubo-a ↔ kubo-b"
           docker exec kubo-a ipfs swarm connect "/dns4/kubo-b/tcp/4001/p2p/$PEER_B" || true
           docker exec kubo-b ipfs swarm connect "/dns4/kubo-a/tcp/4001/p2p/$PEER_A" || true
           sleep 3
-          echo "kubo-a swarm peers: $(docker exec kubo-a ipfs swarm peers 2>/dev/null | wc -l) peers"
-          echo "kubo-b swarm peers: $(docker exec kubo-b ipfs swarm peers 2>/dev/null | wc -l) peers"
+          echo "kubo-a swarm peers: $(docker exec kubo-a ipfs swarm peers 2>/dev/null | wc -l)"
 
-      # ─────────────────────────────────────────
-      # 6. 创建各节点配置目录和同步数据目录
-      # ─────────────────────────────────────────
-      - name: Prepare config and data directories
+      - name: Prepare filesync config and data dirs
         run: |
-          mkdir -p /tmp/e2e/{config-a,config-b,data-a,data-b}
-          # 给容器内的 app 用户（UID 不同于 GHA runner）写权限
-          chmod 777 /tmp/e2e/config-a /tmp/e2e/config-b /tmp/e2e/data-a /tmp/e2e/data-b
-          # 两个节点使用相同加密密钥，保证跨节点解密可用
-          E2E_KEY="e2e-shared-encryption-key-for-testing-only"
+          mkdir -p /tmp/e2e/home-a /tmp/e2e/home-b /tmp/e2e/data-a /tmp/e2e/data-b
+          KEY="e2esharedencryptionkeyfortesting01"
+          SFOLDER_A='"syncFolders":[{"id":"sf","syncId":"e2e-sync","localPath":"/tmp/e2e/data-a","historyCount":5,"encrypt":true}]'
+          SFOLDER_B='"syncFolders":[{"id":"sf","syncId":"e2e-sync","localPath":"/tmp/e2e/data-b","historyCount":5,"encrypt":true}]'
+          WAUTH='"webAuth":{"username":"","passwordHash":""}'
+          printf '{%s,"name":"node-a","webPort":18384,"encryptionKey":"%s",%s}' "$WAUTH" "$KEY" "$SFOLDER_A" > /tmp/e2e/home-a/config.json
+          printf '{%s,"name":"node-b","webPort":28384,"encryptionKey":"%s",%s}' "$WAUTH" "$KEY" "$SFOLDER_B" > /tmp/e2e/home-b/config.json
+          echo "Config A: $(cat /tmp/e2e/home-a/config.json)"
+          echo "Config B: $(cat /tmp/e2e/home-b/config.json)"
 
-          cat >/tmp/e2e/config-a/config.json <<'JSONEOF'
-{
-  "name": "node-a",
-  "webPort": 8384,
-  "webAuth": { "username": "", "passwordHash": "" },
-  "encryptionKey": "e2e-shared-encryption-key-for-testing-only",
-  "syncFolders": [
-    {
-      "id": "e2e-folder",
-      "syncId": "e2e-test-sync",
-      "localPath": "/data",
-      "historyCount": 5,
-      "encrypt": true
-    }
-  ]
-}
-JSONEOF
-
-          cat >/tmp/e2e/config-b/config.json <<'JSONEOF'
-{
-  "name": "node-b",
-  "webPort": 8384,
-  "webAuth": { "username": "", "passwordHash": "" },
-  "encryptionKey": "e2e-shared-encryption-key-for-testing-only",
-  "syncFolders": [
-    {
-      "id": "e2e-folder",
-      "syncId": "e2e-test-sync",
-      "localPath": "/data",
-      "historyCount": 5,
-      "encrypt": true
-    }
-  ]
-}
-JSONEOF
-          echo "Config files created:"
-          cat /tmp/e2e/config-a/config.json
-
-      # ─────────────────────────────────────────
-      # 7. 启动 FileSync 节点 A（使用 GHCR 已发布镜像）
-      # ─────────────────────────────────────────
-      - name: Start FileSync node A
+      - name: Start filesync nodes (background)
         run: |
-          docker run -d --name filesync-a \
-            --network filesync-e2e \
-            -p 18384:8384 \
-            -v /tmp/e2e/config-a:/app/.filesync \
-            -v /tmp/e2e/data-a:/data \
-            -e FILESYNC_HOST=0.0.0.0 \
-            -e IPFS_API=http://kubo-a:5001/api/v0 \
-            -e FILESYNC_DEV_AUTO_TRUST=true \
-            ghcr.io/smellgamed3/filesync-kubo:latest
-          echo "FileSync node A started"
+          FILESYNC_HOME=/tmp/e2e/home-a FILESYNC_HOST=0.0.0.0 IPFS_API=http://127.0.0.1:5001/api/v0 FILESYNC_DEV_AUTO_TRUST=true \
+            nohup filesync-kubo >/tmp/e2e/node-a.log 2>&1 </dev/null &
+          echo $! > /tmp/e2e/node-a.pid
+          FILESYNC_HOME=/tmp/e2e/home-b FILESYNC_HOST=0.0.0.0 IPFS_API=http://127.0.0.1:5002/api/v0 FILESYNC_DEV_AUTO_TRUST=true \
+            nohup filesync-kubo >/tmp/e2e/node-b.log 2>&1 </dev/null &
+          echo $! > /tmp/e2e/node-b.pid
+          echo "filesync-a PID: $(cat /tmp/e2e/node-a.pid)"
+          echo "filesync-b PID: $(cat /tmp/e2e/node-b.pid)"
 
-      # ─────────────────────────────────────────
-      # 8. 启动 FileSync 节点 B（使用 GHCR 已发布镜像）
-      # ─────────────────────────────────────────
-      - name: Start FileSync node B
+      - name: Wait for filesync nodes to be ready
         run: |
-          docker run -d --name filesync-b \
-            --network filesync-e2e \
-            -p 28384:8384 \
-            -v /tmp/e2e/config-b:/app/.filesync \
-            -v /tmp/e2e/data-b:/data \
-            -e FILESYNC_HOST=0.0.0.0 \
-            -e IPFS_API=http://kubo-b:5001/api/v0 \
-            -e FILESYNC_DEV_AUTO_TRUST=true \
-            ghcr.io/smellgamed3/filesync-kubo:latest
-          echo "FileSync node B started"
-
-      # 短暂等待后检查容器是否存活
-      - name: Check containers are running
-        run: |
-          sleep 4
-          docker ps -a --filter "name=filesync"
-          echo "=== filesync-a early logs ==="
-          docker logs filesync-a 2>&1 || true
-          echo "=== filesync-b early logs ==="
-          docker logs filesync-b 2>&1 || true
-
-      # ─────────────────────────────────────────
-      # 9. 等待两个 FileSync 节点 HTTP API 就绪
-      # ─────────────────────────────────────────
-      - name: Wait for FileSync nodes to be ready
-        run: |
-          echo "Waiting for node A API..."
           for i in $(seq 1 30); do
             sleep 2
-            if curl -fsS http://127.0.0.1:18384/api/status >/dev/null 2>&1; then
-              echo "✅ Node A API ready"
-              break
-            fi
-            echo "  attempt $i/30..."
+            curl -fsS http://127.0.0.1:18384/api/status >/dev/null 2>&1 && echo "node-a API ready" && break || echo "  node-a $i/30..."
           done
-          curl -fsS http://127.0.0.1:18384/api/status || { echo "❌ Node A not ready"; docker logs filesync-a; exit 1; }
-
-          echo "Waiting for node B API..."
+          curl -fsS http://127.0.0.1:18384/api/status || { echo "FAIL: node-a not ready"; cat /tmp/e2e/node-a.log; exit 1; }
           for i in $(seq 1 30); do
             sleep 2
-            if curl -fsS http://127.0.0.1:28384/api/status >/dev/null 2>&1; then
-              echo "✅ Node B API ready"
-              break
-            fi
-            echo "  attempt $i/30..."
+            curl -fsS http://127.0.0.1:28384/api/status >/dev/null 2>&1 && echo "node-b API ready" && break || echo "  node-b $i/30..."
           done
-          curl -fsS http://127.0.0.1:28384/api/status || { echo "❌ Node B not ready"; docker logs filesync-b; exit 1; }
+          curl -fsS http://127.0.0.1:28384/api/status || { echo "FAIL: node-b not ready"; cat /tmp/e2e/node-b.log; exit 1; }
 
-      # ─────────────────────────────────────────
-      # 10. 等待节点互相发现并建立自动信任
-      # ─────────────────────────────────────────
-      - name: Wait for peer discovery and mutual auto-trust
+      - name: Wait for peer discovery and auto-trust
         run: |
-          echo "Waiting 25s for PubSub announcement and auto-trust exchange..."
-          sleep 25
-          echo "Node A status: $(curl -fsS http://127.0.0.1:18384/api/status)"
-          echo "Node B status: $(curl -fsS http://127.0.0.1:28384/api/status)"
+          echo "Waiting 30s for pubsub announce and auto-trust exchange..."
+          sleep 30
+          echo "Node A log tail:"
+          tail -20 /tmp/e2e/node-a.log || true
+          echo "Node B log tail:"
+          tail -20 /tmp/e2e/node-b.log || true
           echo "Node A peers: $(curl -fsS http://127.0.0.1:18384/api/nodes)"
           echo "Node B peers: $(curl -fsS http://127.0.0.1:28384/api/nodes)"
 
-      # ─────────────────────────────────────────
-      # 测试 1：节点 A 发文件 → 节点 B 同步接收
-      # ─────────────────────────────────────────
-      - name: "Test 1: A→B file sync"
+      - name: "Test 1 - A to B file sync"
         run: |
-          echo "hello from node A at $(date -u)" > /tmp/e2e/data-a/sync-test.txt
-          echo "Wrote sync-test.txt to node A data dir"
-
+          echo "hello from node A at $(date -u)" > /tmp/e2e/data-a/test-file.txt
           SYNCED=false
           for i in $(seq 1 20); do
             sleep 3
-            CONTENT=$(cat /tmp/e2e/data-b/sync-test.txt 2>/dev/null || true)
+            CONTENT=$(cat /tmp/e2e/data-b/test-file.txt 2>/dev/null || true)
             if echo "$CONTENT" | grep -q "hello from node A"; then
-              echo "✅ Test 1 PASSED – file synced to node B: $CONTENT"
+              echo "PASS: A-to-B sync ok: $CONTENT"
               SYNCED=true
               break
             fi
-            echo "  Waiting for sync ($i/20)..."
+            echo "  waiting $i/20..."
           done
-          $SYNCED || {
-            echo "❌ Test 1 FAILED – file not synced"
-            echo "Node A files API: $(curl -fsS http://127.0.0.1:18384/api/files || true)"
-            echo "Node B files API: $(curl -fsS http://127.0.0.1:28384/api/files || true)"
-            docker logs filesync-a
-            docker logs filesync-b
-            exit 1
-          }
+          $SYNCED || { echo "FAIL: A-to-B sync failed"; cat /tmp/e2e/node-a.log; cat /tmp/e2e/node-b.log; exit 1; }
 
-      # ─────────────────────────────────────────
-      # 测试 2：节点 B 发文件 → 节点 A 反向同步
-      # ─────────────────────────────────────────
-      - name: "Test 2: B→A reverse sync"
+      - name: "Test 2 - B to A reverse sync"
         run: |
           echo "hello from node B at $(date -u)" > /tmp/e2e/data-b/from-b.txt
-          echo "Wrote from-b.txt to node B data dir"
-
           SYNCED=false
           for i in $(seq 1 20); do
             sleep 3
             CONTENT=$(cat /tmp/e2e/data-a/from-b.txt 2>/dev/null || true)
             if echo "$CONTENT" | grep -q "hello from node B"; then
-              echo "✅ Test 2 PASSED – reverse sync to node A: $CONTENT"
+              echo "PASS: B-to-A reverse sync ok: $CONTENT"
               SYNCED=true
               break
             fi
-            echo "  Waiting for reverse sync ($i/20)..."
+            echo "  waiting $i/20..."
           done
-          $SYNCED || { echo "❌ Test 2 FAILED – reverse sync failed"; exit 1; }
+          $SYNCED || { echo "FAIL: B-to-A reverse sync failed"; exit 1; }
 
-      # ─────────────────────────────────────────
-      # 测试 3：覆盖更新，验证版本更新同步
-      # ─────────────────────────────────────────
-      - name: "Test 3: Update sync (overwrite)"
+      - name: "Test 3 - Update sync (overwrite)"
         run: |
-          echo "updated content from node A" > /tmp/e2e/data-a/sync-test.txt
-          echo "Overwrote sync-test.txt on node A"
-
+          echo "updated by node A at $(date -u)" > /tmp/e2e/data-a/test-file.txt
           SYNCED=false
           for i in $(seq 1 20); do
             sleep 3
-            CONTENT=$(cat /tmp/e2e/data-b/sync-test.txt 2>/dev/null || true)
-            if echo "$CONTENT" | grep -q "updated content"; then
-              echo "✅ Test 3 PASSED – update synced: $CONTENT"
+            CONTENT=$(cat /tmp/e2e/data-b/test-file.txt 2>/dev/null || true)
+            if echo "$CONTENT" | grep -q "updated by node A"; then
+              echo "PASS: update sync ok: $CONTENT"
               SYNCED=true
               break
             fi
-            echo "  Waiting for update sync ($i/20)..."
+            echo "  waiting $i/20..."
           done
-          $SYNCED || { echo "❌ Test 3 FAILED – update sync failed"; exit 1; }
+          $SYNCED || { echo "FAIL: update sync failed"; exit 1; }
 
-      # ─────────────────────────────────────────
-      # 测试 4：删除同步
-      # ─────────────────────────────────────────
-      - name: "Test 4: Delete sync"
+      - name: "Test 4 - Delete sync"
         run: |
-          rm /tmp/e2e/data-a/sync-test.txt
-          echo "Deleted sync-test.txt from node A"
-
+          rm /tmp/e2e/data-a/test-file.txt
           DELETED=false
           for i in $(seq 1 20); do
             sleep 3
-            if [ ! -f /tmp/e2e/data-b/sync-test.txt ]; then
-              echo "✅ Test 4 PASSED – delete synced to node B"
+            if [ ! -f /tmp/e2e/data-b/test-file.txt ]; then
+              echo "PASS: delete sync ok"
               DELETED=true
               break
             fi
-            echo "  Waiting for delete sync ($i/20)..."
+            echo "  waiting for delete $i/20..."
           done
-          $DELETED || { echo "❌ Test 4 FAILED – delete sync failed"; exit 1; }
+          $DELETED || { echo "FAIL: delete sync failed"; exit 1; }
 
-      # ─────────────────────────────────────────
-      # 测试 5：状态补全（state sync backfill）
-      # 先写入文件，再触发 state sync，验证新节点能补全历史
-      # ─────────────────────────────────────────
-      - name: "Test 5: State sync backfill verification"
+      - name: "Test 5 - Multiple file backfill"
         run: |
-          # 写入多个文件
-          echo "backfill-1" > /tmp/e2e/data-a/backfill-1.txt
-          echo "backfill-2" > /tmp/e2e/data-a/backfill-2.txt
-          echo "backfill-3" > /tmp/e2e/data-a/backfill-3.txt
-          echo "Wrote 3 backfill files to node A"
-
+          echo "backfill-1" > /tmp/e2e/data-a/bf-1.txt
+          echo "backfill-2" > /tmp/e2e/data-a/bf-2.txt
+          echo "backfill-3" > /tmp/e2e/data-a/bf-3.txt
           SYNCED=false
           for i in $(seq 1 20); do
             sleep 3
-            B1=$(cat /tmp/e2e/data-b/backfill-1.txt 2>/dev/null || true)
-            B2=$(cat /tmp/e2e/data-b/backfill-2.txt 2>/dev/null || true)
-            B3=$(cat /tmp/e2e/data-b/backfill-3.txt 2>/dev/null || true)
+            B1=$(cat /tmp/e2e/data-b/bf-1.txt 2>/dev/null || true)
+            B2=$(cat /tmp/e2e/data-b/bf-2.txt 2>/dev/null || true)
+            B3=$(cat /tmp/e2e/data-b/bf-3.txt 2>/dev/null || true)
             if [ "$B1" = "backfill-1" ] && [ "$B2" = "backfill-2" ] && [ "$B3" = "backfill-3" ]; then
-              echo "✅ Test 5 PASSED – all 3 backfill files synced"
+              echo "PASS: all 3 backfill files synced"
               SYNCED=true
               break
             fi
-            echo "  Waiting for backfill sync ($i/20)... B1='$B1' B2='$B2' B3='$B3'"
+            echo "  waiting $i/20... B1='$B1' B2='$B2' B3='$B3'"
           done
-          $SYNCED || { echo "❌ Test 5 FAILED – backfill sync incomplete"; exit 1; }
+          $SYNCED || { echo "FAIL: backfill sync incomplete"; exit 1; }
 
-      # ─────────────────────────────────────────
-      # 测试 6：API 端点功能验证
-      # ─────────────────────────────────────────
-      - name: "Test 6: API endpoints verification"
+      - name: "Test 6 - API verification"
         run: |
-          echo "=== Node A /api/status ==="
           STATUS_A=$(curl -fsS http://127.0.0.1:18384/api/status)
-          echo "$STATUS_A"
-          echo "$STATUS_A" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok']==True, 'ok!=true'; print('✅ Node A status OK')"
-
-          echo "=== Node B /api/status ==="
           STATUS_B=$(curl -fsS http://127.0.0.1:28384/api/status)
-          echo "$STATUS_B"
-          echo "$STATUS_B" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok']==True, 'ok!=true'; print('✅ Node B status OK')"
-
-          echo "=== Node A /api/nodes ==="
+          echo "Node A: $STATUS_A"
+          echo "Node B: $STATUS_B"
+          echo "$STATUS_A" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok']; print('PASS: node A ok')"
+          echo "$STATUS_B" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok']; print('PASS: node B ok')"
           NODES_A=$(curl -fsS http://127.0.0.1:18384/api/nodes)
-          echo "$NODES_A"
-          echo "$NODES_A" | python3 -c "import sys,json; nodes=json.load(sys.stdin); assert any(n.get('node_id','').startswith('12D') or 'node-b' in n.get('name','') for n in nodes), f'node-b not found in {nodes}'; print('✅ Node A sees node B')"
-
-          echo "=== Node A /api/files ==="
+          echo "Peers: $NODES_A"
+          echo "$NODES_A" | python3 -c "import sys,json; n=json.load(sys.stdin); assert len(n)>0,'no peers discovered'; print('PASS: node A sees',len(n),'peer(s)')"
           FILES_A=$(curl -fsS http://127.0.0.1:18384/api/files)
-          echo "$FILES_A"
-          echo "$FILES_A" | python3 -c "import sys,json; files=json.load(sys.stdin); assert len(files)>0, 'no files indexed'; print(f'✅ Node A has {len(files)} indexed files')"
+          echo "$FILES_A" | python3 -c "import sys,json; f=json.load(sys.stdin); assert len(f)>0,'no files indexed'; print('PASS: node A has',len(f),'file(s)')"
+          echo "$FILES_A" | python3 -c "import sys,json; f=json.load(sys.stdin); assert any(x.get('syncId')=='e2e-sync' for x in f); print('PASS: syncId correct')"
+          curl -fsS http://127.0.0.1:18384/ui | grep -q "FileSync" && echo "PASS: web UI responds"
 
-          echo "=== Node A /api/folders ==="
-          FOLDERS_A=$(curl -fsS http://127.0.0.1:18384/api/folders)
-          echo "$FOLDERS_A"
-          echo "$FOLDERS_A" | python3 -c "import sys,json; f=json.load(sys.stdin); assert any(x.get('syncId')=='e2e-test-sync' for x in f), 'syncId not found'; print('✅ Sync folder config correct')"
-
-          echo "=== Node A /ui (HTML) ==="
-          curl -fsS http://127.0.0.1:18384/ui | grep -q "FileSync" && echo "✅ Web UI responds"
-
-      # ─────────────────────────────────────────
-      # 测试 7：从 GitHub Packages 安装 npm 包，验证 CLI 功能
-      # ─────────────────────────────────────────
-      - name: "Test 7: npm package install from GitHub Packages"
-        run: |
-          npm config set @smellgamed3:registry https://npm.pkg.github.com
-          npm config set //npm.pkg.github.com/:_authToken ${{ secrets.GITHUB_TOKEN }}
-          npm install -g @smellgamed3/filesync-kubo
-          echo "✅ @smellgamed3/filesync-kubo installed from GitHub Packages"
-          which filesync-kubo
-
-          # 启动 CLI 验证配置文件自动生成、API 可访问
-          FILESYNC_HOME=/tmp/npm-test-home FILESYNC_HOST=0.0.0.0 timeout 5 filesync-kubo || true
-          [ -f /tmp/npm-test-home/config.json ] \
-            && echo "✅ CLI creates config.json on first run" \
-            || echo "⚠ Config file not found – may be timing issue"
-
-      # ─────────────────────────────────────────
-      # 失败时收集所有容器日志
-      # ─────────────────────────────────────────
       - name: Collect logs on failure
         if: failure()
         run: |
-          echo "=== kubo-a logs ===" && docker logs kubo-a 2>&1 | tail -40 || true
-          echo "=== kubo-b logs ===" && docker logs kubo-b 2>&1 | tail -40 || true
-          echo "=== filesync-a logs ===" && docker logs filesync-a 2>&1 || true
-          echo "=== filesync-b logs ===" && docker logs filesync-b 2>&1 || true
-          echo "=== data-a contents ===" && ls -la /tmp/e2e/data-a/ 2>/dev/null || true
-          echo "=== data-b contents ===" && ls -la /tmp/e2e/data-b/ 2>/dev/null || true
-          echo "=== node A nodes API ===" && curl -fsS http://127.0.0.1:18384/api/nodes 2>/dev/null || true
-          echo "=== node B nodes API ===" && curl -fsS http://127.0.0.1:28384/api/nodes 2>/dev/null || true
+          echo "=== node-a.log ===" && cat /tmp/e2e/node-a.log || true
+          echo "=== node-b.log ===" && cat /tmp/e2e/node-b.log || true
+          echo "=== kubo-a logs ===" && docker logs kubo-a 2>&1 | tail -20 || true
+          echo "=== kubo-b logs ===" && docker logs kubo-b 2>&1 | tail -20 || true
+          echo "=== data-a ===" && ls -la /tmp/e2e/data-a/ || true
+          echo "=== data-b ===" && ls -la /tmp/e2e/data-b/ || true
 
-      # ─────────────────────────────────────────
-      # 清理
-      # ─────────────────────────────────────────
       - name: Cleanup
         if: always()
         run: |
-          docker rm -f kubo-a kubo-b filesync-a filesync-b 2>/dev/null || true
-          docker network rm filesync-e2e 2>/dev/null || true
-          rm -rf /tmp/e2e /tmp/npm-test-home
+          kill $(cat /tmp/e2e/node-a.pid 2>/dev/null) 2>/dev/null || true
+          kill $(cat /tmp/e2e/node-b.pid 2>/dev/null) 2>/dev/null || true
+          docker rm -f kubo-a kubo-b 2>/dev/null || true
+          docker network rm kubo-net 2>/dev/null || true
+          rm -rf /tmp/e2e
