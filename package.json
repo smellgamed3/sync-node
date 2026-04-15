@@ -32,6 +32,7 @@
     "dev": "tsx src/core/main.ts",
     "test": "vitest run",
     "test:integration": "vitest run tests/multi-node.integration.test.ts",
+    "test:e2e": "gh workflow run e2e-published.yml && echo 'E2E workflow triggered on GitHub Actions'",
     "publish:pack": "node scripts/publish-pack.mjs",
     "publish:npm": "npm publish",
     "publish:npm:dry-run": "npm publish --dry-run",

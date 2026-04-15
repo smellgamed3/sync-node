@@ -52,6 +52,11 @@ async function bootstrap() {
     db,
     myPeerId: peerId,
     name: config.name,
+    // In test mode, automatically trust all discovered peers so E2E tests can run
+    // without pre-seeding the DB. Never use this in production.
+    onAnnounce: process.env.FILESYNC_DEV_AUTO_TRUST === 'true'
+      ? async (from) => { await trust.setTrust(from, 'trusted'); }
+      : undefined,
     onDirectMessage: async (from, msg: PubSubMessage) => {
       switch (msg.type) {
         case 'trust-change':
