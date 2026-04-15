@@ -118,6 +118,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build
+        run: npm run build
+
       - name: Publish package to GitHub Packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
