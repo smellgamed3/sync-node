@@ -52,16 +52,28 @@ ipfs bootstrap rm --all
 
 ## 三种安装方式
 
-### 方式一：Docker（推荐生产）
+### 方式一：Docker Compose（推荐生产）
+
+FileSync 需要 Kubo 才能真正同步文件，推荐用 Compose 同时启动两个容器。详见上方**快速部署**章节，或 [docs/deployment.md](docs/deployment.md)。
 
 ```bash
-docker pull ghcr.io/smellgamed3/filesync-kubo:latest
+# 按上方快速部署章节创建好 docker-compose.yml 后：
+docker compose up -d
+```
+
+> 如果本机已有运行中的 Kubo，也可以只启动 filesync 容器（见下方"仅 filesync 容器"方式）。
+
+### 方式一-b：仅 filesync 容器（已有 Kubo 时）
+
+```bash
 docker run -d -p 8384:8384 \
   -e IPFS_API=http://host.docker.internal:5001/api/v0 \
   -e FILESYNC_HOME=/app/.filesync \
   -v filesync_data:/app/.filesync \
   ghcr.io/smellgamed3/filesync-kubo:latest
 ```
+
+> `host.docker.internal` 指向宿主机，仅在 Docker Desktop（macOS/Windows）中可用。Linux 需使用宿主机实际 IP 或 `--network=host`。
 
 ### 方式二：npm 全局安装
 
