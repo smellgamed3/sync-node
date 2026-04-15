@@ -14,6 +14,7 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV FILESYNC_HOME=/app/.filesync
+ENV FILESYNC_HOST=0.0.0.0
 COPY package*.json ./
 COPY --from=deps /app/node_modules ./node_modules
 RUN npm prune --omit=dev

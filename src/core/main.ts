@@ -106,7 +106,7 @@ async function bootstrap() {
     }),
   });
 
-  const host = '127.0.0.1';
+  const host = process.env.FILESYNC_HOST ?? '127.0.0.1';
   await app.listen({ host, port: config.webPort });
   console.log(`FileSync running on http://${host}:${config.webPort}/ui`);
 

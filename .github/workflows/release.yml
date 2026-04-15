@@ -82,7 +82,6 @@ jobs:
 
   npmjs:
     needs: verify
-    if: ${{ secrets.NPM_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -98,6 +97,7 @@ jobs:
         run: npm ci
 
       - name: Publish to npmjs
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
