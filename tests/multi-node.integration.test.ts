@@ -27,6 +27,15 @@ interface NodeRig {
   pubsub: PubSubManager;
 }
 
+interface RelayRig {
+  peerId: string;
+  db: ReturnType<typeof createMemoryDb>;
+  ipfs: NetworkedMemoryIpfsClient;
+  engine: SyncEngine;
+  trust: TrustManager;
+  pubsub: PubSubManager;
+}
+
 async function createRig(network: ReturnType<typeof createMemoryIpfsNetwork>, peerId: string, dir: string, options?: Partial<SyncFolder>): Promise<NodeRig> {
   const key = Buffer.alloc(32, 9);
   const db = createMemoryDb();
@@ -101,6 +110,83 @@ async function createRig(network: ReturnType<typeof createMemoryIpfsNetwork>, pe
 
   await pubsub.start();
   return { peerId, dir, folder, db, engine, trust, pubsub };
+}
+
+/**
+ * relay 节点 rig：不挂载本地文件夹，不解密，只做元数据镜像 + pinner
+ */
+async function createRelayRig(network: ReturnType<typeof createMemoryIpfsNetwork>, peerId: string): Promise<RelayRig> {
+  const db = createMemoryDb();
+  const ipfs = new NetworkedMemoryIpfsClient(network, peerId);
+
+  let pubsub!: PubSubManager;
+  const engine = new SyncEngine({
+    db,
+    ipfs,
+    peerId,
+    encryptionKey: Buffer.alloc(32, 0), // relay 不解密，key 仅占位
+    broadcast: async (msg) => pubsub.broadcastToTrusted(msg),
+  });
+
+  const trust = new TrustManager({
+    db,
+    onTrustNotify: async (targetPeerId, trusted) => {
+      await pubsub.sendTo(targetPeerId, {
+        type: 'trust-change',
+        from: peerId,
+        ts: Date.now(),
+        payload: { trusted },
+      });
+    },
+    onMutualTrust: async (targetPeerId) => {
+      await engine.triggerStateSync(targetPeerId);
+    },
+  });
+
+  pubsub = new PubSubManager({
+    ipfs,
+    db,
+    myPeerId: peerId,
+    name: `relay-${peerId}`,
+    // relay 模式：信任节点 announce 时补发 state-sync（含防抖）
+    onAnnounce: async (from) => {
+      if (trust.isMutualTrust(from) && engine.shouldRelaySyncTo(from)) {
+        await engine.triggerStateSync(from);
+      }
+    },
+    onDirectMessage: async (from, msg: PubSubMessage) => {
+      switch (msg.type) {
+        case 'trust-change':
+          await trust.onRemoteTrustChange(from, msg.payload as { trusted: boolean });
+          break;
+        case 'file-changed':
+          if (trust.isMutualTrust(from)) {
+            // relay 模式：存储元数据 + pin，不写本地文件
+            await engine.onRelayStore(msg.payload as FileVersion);
+          }
+          break;
+        case 'file-deleted':
+          if (trust.isMutualTrust(from)) {
+            await engine.onRelayDelete(msg.payload as { syncId: string; path: string });
+          }
+          break;
+        case 'state-sync': {
+          if (!trust.isMutualTrust(from)) break;
+          const payload = msg.payload as { targetPeerId?: string; files?: FileVersion[] };
+          if (payload.targetPeerId && payload.targetPeerId !== peerId) break;
+          for (const remote of payload.files ?? []) {
+            await engine.onRelayStore(remote);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    },
+  });
+
+  await pubsub.start();
+  return { peerId, db, ipfs, engine, trust, pubsub };
 }
 
 describe('multi-node integration', () => {
@@ -209,6 +295,61 @@ describe('multi-node integration', () => {
       rmSync(dirA, { recursive: true, force: true });
       rmSync(dirB, { recursive: true, force: true });
       rmSync(dirC, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('relay node: 离线补全同步', () => {
+  it('relay 存储 A 的变更，B 上线后通过 relay 补全下载', async () => {
+    const dirA = mkdtempSync(join(tmpdir(), 'filesync-relay-a-'));
+    const dirB = mkdtempSync(join(tmpdir(), 'filesync-relay-b-'));
+    try {
+      const network = createMemoryIpfsNetwork();
+      // 共享加密 key，A 和 B 用同一 key，relay 不解密
+      const sharedKey = Buffer.alloc(32, 9);
+
+      const nodeA = await createRig(network, 'peer-ra', dirA);
+      const nodeB = await createRig(network, 'peer-rb', dirB);
+      const relayR = await createRelayRig(network, 'peer-relay');
+
+      // A↔relay 建立互信
+      await nodeA.trust.setTrust('peer-relay', 'trusted');
+      await relayR.trust.setTrust('peer-ra', 'trusted');
+      // B↔relay 建立互信（A 和 B 之间不直接建立信任）
+      await nodeB.trust.setTrust('peer-relay', 'trusted');
+      await relayR.trust.setTrust('peer-rb', 'trusted');
+      await flush(6);
+
+      // A 在 B "离线" 期间同步一个文件
+      const filePath = join(dirA, 'offline-test.txt');
+      writeFileSync(filePath, 'synced while B offline');
+      await nodeA.engine.onLocalChange(nodeA.folder, 'offline-test.txt', filePath);
+      await flush(6);
+
+      // relay 应已存储元数据并 pin CID
+      const relayFiles = relayR.db.getAllFiles();
+      expect(relayFiles.some((f) => f.path === 'offline-test.txt')).toBe(true);
+      const relayCid = relayFiles.find((f) => f.path === 'offline-test.txt')?.cid;
+      expect(relayCid).toBeDefined();
+      expect(relayR.ipfs.isPinned(relayCid!)).toBe(true);
+
+      // B 此时未收到文件（A 和 B 没有直接信任）
+      expect(existsSync(join(dirB, 'offline-test.txt'))).toBe(false);
+
+      // B 上线 announce —— relay 触发 state-sync 给 B
+      await nodeB.pubsub.announce();
+      await flush(8);
+
+      // B 通过 relay 补全下载（使用相同加密 key 解密）
+      expect(existsSync(join(dirB, 'offline-test.txt'))).toBe(true);
+      expect(readFileSync(join(dirB, 'offline-test.txt'), 'utf8')).toBe('synced while B offline');
+
+      nodeA.pubsub.stop();
+      nodeB.pubsub.stop();
+      relayR.pubsub.stop();
+    } finally {
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
     }
   });
 });
