@@ -118,11 +118,11 @@ filesync-kubo
 
 #### 从 GitHub Packages 安装
 
-如果发布方已将包同步到 GitHub Packages，可直接安装：
+包已发布至 GitHub Packages，使用以下命令安装：
 
 ```bash
-npm config set @<owner>:registry https://npm.pkg.github.com
-npm install -g @<owner>/filesync-kubo
+npm config set @smellgamed3:registry https://npm.pkg.github.com
+npm install -g @smellgamed3/filesync-kubo
 filesync-kubo
 ```
 
@@ -392,8 +392,8 @@ docker compose up --build -d
 ### 9.2 从 GHCR 直接运行
 
 ```bash
-docker pull ghcr.io/<owner>/filesync-kubo:latest
-docker run -d -p 8384:8384 -e FILESYNC_HOME=/app/.filesync ghcr.io/<owner>/filesync-kubo:latest
+docker pull ghcr.io/smellgamed3/filesync-kubo:latest
+docker run -d -p 8384:8384 -e FILESYNC_HOME=/app/.filesync ghcr.io/smellgamed3/filesync-kubo:latest
 ```
 
 ### 9.3 访问地址
@@ -407,7 +407,7 @@ http://127.0.0.1:8384/ui
 - 当前 Compose 默认把 `IPFS_API` 指向宿主机地址
 - 如使用真实多节点，需确保容器可以访问宿主机或独立 IPFS 容器
 - 配置目录卷建议持久化保存
-- 若使用 GHCR 镜像，请将 `<owner>` 替换为实际 GitHub 用户或组织名
+- GHCR 镜像地址：`ghcr.io/smellgamed3/filesync-kubo:latest`
 
 ---
 

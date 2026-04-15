@@ -72,14 +72,14 @@
 镜像发布后，可按以下格式拉取：
 
 ```text
-ghcr.io/<owner>/filesync-kubo:latest
+ghcr.io/smellgamed3/filesync-kubo:latest
 ```
 
-例如：
+已发布版本：
 
 ```bash
-docker pull ghcr.io/<owner>/filesync-kubo:latest
-docker run -d -p 8384:8384 ghcr.io/<owner>/filesync-kubo:latest
+docker pull ghcr.io/smellgamed3/filesync-kubo:latest
+docker run -d -p 8384:8384 ghcr.io/smellgamed3/filesync-kubo:latest
 ```
 
 ## 5. 从 GitHub Packages 安装 npm 包
@@ -87,14 +87,14 @@ docker run -d -p 8384:8384 ghcr.io/<owner>/filesync-kubo:latest
 GitHub Packages 通常使用带 scope 的包名。工作流会自动将包名转换为：
 
 ```text
-@<owner>/filesync-kubo
+@smellgamed3/filesync-kubo
 ```
 
-用户安装前，可先设置 registry：
+用户安装：
 
 ```bash
-npm config set @<owner>:registry https://npm.pkg.github.com
-npm install -g @<owner>/filesync-kubo
+npm config set @smellgamed3:registry https://npm.pkg.github.com
+npm install -g @smellgamed3/filesync-kubo
 ```
 
 安装后启动：
@@ -143,7 +143,7 @@ git push origin v0.1.0
 检查：
 
 - 仓库 Actions 权限是否允许写 Packages
-- 镜像名是否符合 `ghcr.io/<owner>/<image>` 规则
+- 镜像名是否符合 `ghcr.io/smellgamed3/<image>` 规则
 
 ### npmjs 发布失败
 
