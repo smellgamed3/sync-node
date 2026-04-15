@@ -80,6 +80,15 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Set GHCR package visibility to public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            /user/packages/container/filesync-kubo \
+            -f visibility=public || echo "visibility set skipped (may already be public)"
+
   npmjs:
     needs: verify
     runs-on: ubuntu-latest

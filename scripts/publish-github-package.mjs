@@ -42,7 +42,7 @@ async function main() {
 
   const publishCommand = process.env.NPM_PUBLISH_DRY_RUN === '1'
     ? `${npmCommand} publish --dry-run`
-    : `${npmCommand} publish`;
+    : `${npmCommand} publish --access public`;
 
   console.log(`Publishing ${pkg.name} to GitHub Packages`);
   run(publishCommand, publishDir);
