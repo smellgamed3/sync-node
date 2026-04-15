@@ -212,6 +212,72 @@ FILESYNC_HOME=/data/filesync filesync-kubo
 IPFS_API=http://127.0.0.1:5001/api/v0 filesync-kubo
 ```
 
+### 6.2.1 后台常驻（systemd，推荐 Linux 生产）
+
+创建 service 文件：
+
+```bash
+sudo tee /etc/systemd/system/filesync.service > /dev/null << 'EOF'
+[Unit]
+Description=FileSync Kubo Node
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Environment=FILESYNC_HOME=/home/YOUR_USER/.filesync
+ExecStart=/usr/local/bin/filesync-kubo
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 加载并启动
+sudo systemctl daemon-reload
+sudo systemctl enable filesync
+sudo systemctl start filesync
+
+# 查看状态和日志
+systemctl status filesync
+journalctl -u filesync -f
+```
+
+> **提示**：同理，将 `ipfs daemon` 也配置为 systemd 服务，并在 `After=` 中加上 `ipfs.service` 以保证启动顺序。
+
+### 6.2.2 后台常驻（PM2，跨平台，macOS/Linux/Windows 均支持）
+
+```bash
+# 安装 PM2
+npm install -g pm2
+
+# 启动
+FILESYNC_HOME=~/.filesync pm2 start filesync-kubo --name filesync
+
+# 开机自启
+pm2 startup        # 按提示执行输出的命令
+pm2 save
+
+# 常用操作
+pm2 status         # 查看进程状态
+pm2 logs filesync  # 实时日志
+pm2 restart filesync
+pm2 stop filesync
+```
+
+### 6.2.3 后台常驻（nohup，临时测试用）
+
+```bash
+nohup FILESYNC_HOME=~/.filesync filesync-kubo >> ~/.filesync/filesync.log 2>&1 &
+echo $! > ~/.filesync/filesync.pid   # 保存 PID 便于停止
+
+# 停止
+kill $(cat ~/.filesync/filesync.pid)
+```
+
 ### 6.3 配置 Kubo（非 Docker 场景）
 
 ```bash
