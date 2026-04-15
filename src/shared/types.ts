@@ -52,6 +52,8 @@ export interface AppConfig {
   webAuth: { username: string; passwordHash: string };
   encryptionKey?: string;
   syncFolders: SyncFolder[];
+  relay?: boolean;
+  relayRetentionDays?: number;
 }
 
 export interface NodeRecord {

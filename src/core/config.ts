@@ -40,6 +40,9 @@ export function loadConfig(baseDir?: string): AppConfig {
     writeFileSync(file, JSON.stringify(parsed, null, 2));
   }
   parsed.syncFolders ??= [];
+  if (process.env.FILESYNC_RELAY === 'true') {
+    parsed.relay = true;
+  }
   return parsed;
 }
 
