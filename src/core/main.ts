@@ -66,7 +66,10 @@ async function bootstrap() {
           if (!trust.isMutualTrust(from)) return;
           const remote = msg.payload as FileVersion;
           const folder = config.syncFolders.find((item) => item.syncId === remote.syncId);
-          if (folder) await engine.onRemoteChange(folder, remote);
+          if (folder) {
+            await engine.onRemoteChange(folder, remote).catch((err) =>
+              console.warn(`onRemoteChange error [${remote.path}]:`, err));
+          }
           break;
         }
         case 'file-deleted': {
@@ -96,7 +99,7 @@ async function bootstrap() {
     },
   });
 
-  await pubsub.start().catch(() => undefined);
+  await pubsub.start().catch((err) => console.warn('pubsub start failed:', err));
   const watcher = new Watcher(engine);
   watcher.start(config.syncFolders);
 

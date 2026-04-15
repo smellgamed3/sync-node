@@ -42,7 +42,8 @@ export class PubSubManager {
     }));
 
     await this.announce();
-    this.timer = setInterval(() => void this.announce(), 30_000);
+    const intervalMs = parseInt(process.env.FILESYNC_ANNOUNCE_INTERVAL ?? '30000', 10);
+    this.timer = setInterval(() => void this.announce(), intervalMs);
   }
 
   async announce(): Promise<void> {
@@ -60,7 +61,8 @@ export class PubSubManager {
   }
 
   async broadcastToTrusted(msg: PubSubMessage): Promise<void> {
-    for (const node of this.options.db.getMutualTrustedNodes()) {
+    const nodes = this.options.db.getMutualTrustedNodes();
+    for (const node of nodes) {
       await this.sendTo(node.node_id, msg);
     }
   }

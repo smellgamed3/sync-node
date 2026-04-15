@@ -20,7 +20,8 @@ export class Watcher {
       const handle = async (fullPath: string) => {
         if (this.engine.isWriteLocked(fullPath)) return;
         const rel = relative(folder.localPath, fullPath);
-        await this.engine.onLocalChange(folder, rel, fullPath).catch(() => undefined);
+        await this.engine.onLocalChange(folder, rel, fullPath).catch((err) =>
+          console.warn(`watcher onLocalChange error [${rel}]:`, err));
       };
 
       watcher.on('add', handle);

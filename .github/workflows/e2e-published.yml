@@ -2,9 +2,6 @@ name: E2E npm package multi-node
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: [Release]
-    types: [completed]
 
 permissions:
   contents: read
@@ -32,7 +29,7 @@ jobs:
 
       - name: Start and configure Kubo A
         run: |
-          docker run -d --name kubo-a --network kubo-net -p 5001:5001 ipfs/kubo:latest
+          docker run -d --name kubo-a --network kubo-net -p 5001:5001 ipfs/kubo:v0.32.0
           for i in $(seq 1 30); do
             sleep 2
             docker exec kubo-a ipfs id >/dev/null 2>&1 && echo "kubo-a init ready" && break || echo "  kubo-a init $i/30..."
@@ -50,7 +47,7 @@ jobs:
 
       - name: Start and configure Kubo B
         run: |
-          docker run -d --name kubo-b --network kubo-net -p 5002:5001 ipfs/kubo:latest
+          docker run -d --name kubo-b --network kubo-net -p 5002:5001 ipfs/kubo:v0.32.0
           for i in $(seq 1 30); do
             sleep 2
             docker exec kubo-b ipfs id >/dev/null 2>&1 && echo "kubo-b init ready" && break || echo "  kubo-b init $i/30..."

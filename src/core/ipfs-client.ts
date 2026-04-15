@@ -53,35 +53,55 @@ export class KuboHttpClient implements IpfsClient {
     return (data.Peers ?? []).map((p) => p.Peer);
   }
 
+  // kubo HTTP API 要求 topic 使用 multibase 编码（base64url, 前缀 'u'）
+  private multibaseTopic(topic: string): string {
+    return 'u' + Buffer.from(topic).toString('base64url');
+  }
+
   async pubsubPublish(topic: string, data: string): Promise<void> {
-    const encoded = Buffer.from(data).toString('base64url');
-    await fetch(`${this.api}/pubsub/pub?arg=${encodeURIComponent(topic)}&arg=${encoded}`, { method: 'POST' });
+    const mbTopic = this.multibaseTopic(topic);
+    const form = new FormData();
+    form.append('file', new Blob([data]), 'data');
+    const res = await fetch(`${this.api}/pubsub/pub?arg=${mbTopic}`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.warn(`pubsub publish failed [${res.status}]: ${text}`);
+    }
   }
 
   async pubsubSubscribe(topic: string, onMessage: (from: string, data: string) => void): Promise<AbortController> {
     const controller = new AbortController();
-    const res = await fetch(`${this.api}/pubsub/sub?arg=${encodeURIComponent(topic)}`, { method: 'POST', signal: controller.signal });
+    const mbTopic = this.multibaseTopic(topic);
+    const res = await fetch(`${this.api}/pubsub/sub?arg=${mbTopic}`, { method: 'POST', signal: controller.signal });
+    if (!res.ok) console.warn(`pubsub sub [${topic}] failed: ${res.status}`);
     const reader = res.body?.getReader();
-    if (!reader) return controller;
+    if (!reader) { console.warn(`pubsub sub [${topic}]: no body reader`); return controller; }
     const decoder = new TextDecoder();
     let buffer = '';
 
     void (async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const msg = JSON.parse(line) as { from: string; data: string };
-            onMessage(msg.from, Buffer.from(msg.data, 'base64').toString('utf8'));
-          } catch {
-            // ignore malformed pubsub frame
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line) as { from: string; data: string };
+              const raw = msg.data.startsWith('u')
+                ? Buffer.from(msg.data.slice(1), 'base64url').toString('utf8')
+                : Buffer.from(msg.data, 'base64').toString('utf8');
+              onMessage(msg.from, raw);
+            } catch (err) {
+              console.warn(`pubsub parse error [${topic}]:`, err);
+            }
           }
         }
+      } catch (err) {
+        if (!controller.signal.aborted) console.warn(`pubsub sub [${topic}] reader error:`, err);
       }
     })();
 
