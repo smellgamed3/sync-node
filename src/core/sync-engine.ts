@@ -17,6 +17,9 @@ interface SyncEngineOptions {
 
 export class SyncEngine {
   private readonly writeLock = new Set<string>();
+  // relay 模式：记录每个 peer 上次 state-sync 时间，防止 announce 触发风暴
+  private relaySyncTime = new Map<string, number>();
+  private static readonly RELAY_SYNC_INTERVAL = 60_000;
 
   constructor(private readonly options: SyncEngineOptions) {}
 
@@ -123,6 +126,43 @@ export class SyncEngine {
       ts: Date.now(),
       payload: { targetPeerId, files: this.options.db.getAllFiles() },
     });
+  }
+
+  /**
+   * relay 模式：存储远端文件的元数据并 pin CID，不解密不写本地文件
+   */
+  async onRelayStore(remote: FileVersion): Promise<void> {
+    const safePath = this.safeRelativePath(remote.path);
+    const existing = this.options.db.getFile(remote.syncId, safePath);
+    if (existing?.cid === remote.cid) return;
+
+    if (existing) {
+      this.options.db.addHistory(remote.syncId, existing);
+    }
+    this.options.db.upsertFile(remote.syncId, { ...remote, path: safePath });
+    await this.options.ipfs.pin(remote.cid);
+  }
+
+  /**
+   * relay 模式：删除文件元数据，旧版本归档到历史（保留 CID 可用性）
+   */
+  async onRelayDelete(payload: { syncId: string; path: string }): Promise<void> {
+    const safePath = this.safeRelativePath(payload.path);
+    const existing = this.options.db.getFile(payload.syncId, safePath);
+    if (!existing) return;
+
+    this.options.db.addHistory(payload.syncId, existing);
+    this.options.db.deleteFile(payload.syncId, safePath);
+  }
+
+  /**
+   * relay 模式防抖：每个 peer 最少间隔 60 秒才触发 state-sync
+   */
+  shouldRelaySyncTo(peerId: string): boolean {
+    const last = this.relaySyncTime.get(peerId) ?? 0;
+    if (Date.now() - last < SyncEngine.RELAY_SYNC_INTERVAL) return false;
+    this.relaySyncTime.set(peerId, Date.now());
+    return true;
   }
 
   private async cleanupHistory(syncId: string, path: string, keepCount: number): Promise<void> {

@@ -181,6 +181,10 @@ export class NetworkedMemoryIpfsClient implements IpfsClient {
     this.pinned.delete(cid);
   }
 
+  isPinned(cid: string): boolean {
+    return this.pinned.has(cid);
+  }
+
   async id(): Promise<{ ID: string; Addresses: string[] }> {
     return { ID: this.peerId, Addresses: [] };
   }
