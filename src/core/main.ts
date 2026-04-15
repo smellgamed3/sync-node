@@ -52,11 +52,17 @@ async function bootstrap() {
     db,
     myPeerId: peerId,
     name: config.name,
-    // In test mode, automatically trust all discovered peers so E2E tests can run
-    // without pre-seeding the DB. Never use this in production.
+    // 测试模式自动信任所有发现节点（E2E 专用，生产禁用）
+    // relay 模式：信任节点上线时补发 state-sync（含防抖）
     onAnnounce: process.env.FILESYNC_DEV_AUTO_TRUST === 'true'
       ? async (from) => { await trust.setTrust(from, 'trusted'); }
-      : undefined,
+      : config.relay
+        ? async (from) => {
+            if (trust.isMutualTrust(from) && engine.shouldRelaySyncTo(from)) {
+              await engine.triggerStateSync(from);
+            }
+          }
+        : undefined,
     onDirectMessage: async (from, msg: PubSubMessage) => {
       switch (msg.type) {
         case 'trust-change':
@@ -65,26 +71,39 @@ async function bootstrap() {
         case 'file-changed': {
           if (!trust.isMutualTrust(from)) return;
           const remote = msg.payload as FileVersion;
-          const folder = config.syncFolders.find((item) => item.syncId === remote.syncId);
-          if (folder) {
-            await engine.onRemoteChange(folder, remote).catch((err) =>
-              console.warn(`onRemoteChange error [${remote.path}]:`, err));
+          if (config.relay) {
+            // relay 模式：存储元数据 + pin，不解密不写本地
+            await engine.onRelayStore(remote);
+          } else {
+            const folder = config.syncFolders.find((item) => item.syncId === remote.syncId);
+            if (folder) {
+              await engine.onRemoteChange(folder, remote).catch((err) =>
+                console.warn(`onRemoteChange error [${remote.path}]:`, err));
+            }
           }
           break;
         }
         case 'file-deleted': {
           if (!trust.isMutualTrust(from)) return;
           const payload = msg.payload as { syncId: string; path: string };
-          const folder = config.syncFolders.find((item) => item.syncId === payload.syncId);
-          if (folder) await engine.onRemoteDelete(folder, payload);
+          if (config.relay) {
+            await engine.onRelayDelete(payload);
+          } else {
+            const folder = config.syncFolders.find((item) => item.syncId === payload.syncId);
+            if (folder) await engine.onRemoteDelete(folder, payload);
+          }
           break;
         }
         case 'state-sync': {
           const payload = msg.payload as { targetPeerId?: string; files?: FileVersion[] };
           if (payload.targetPeerId && payload.targetPeerId !== peerId) return;
           for (const remote of payload.files ?? []) {
-            const folder = config.syncFolders.find((item) => item.syncId === remote.syncId);
-            if (folder) await engine.onRemoteChange(folder, remote);
+            if (config.relay) {
+              await engine.onRelayStore(remote);
+            } else {
+              const folder = config.syncFolders.find((item) => item.syncId === remote.syncId);
+              if (folder) await engine.onRemoteChange(folder, remote);
+            }
           }
           break;
         }
@@ -100,8 +119,15 @@ async function bootstrap() {
   });
 
   await pubsub.start().catch((err) => console.warn('pubsub start failed:', err));
-  const watcher = new Watcher(engine);
-  watcher.start(config.syncFolders);
+
+  let watcher: Watcher | undefined;
+  if (config.relay) {
+    // relay 模式：不监听本地文件，只做元数据镜像 + pinner
+    console.log(`[RELAY] FileSync relay node started (peerId: ${peerId})`);
+  } else {
+    watcher = new Watcher(engine);
+    watcher.start(config.syncFolders);
+  }
 
   const app = buildApp({
     db,
@@ -119,7 +145,7 @@ async function bootstrap() {
   console.log(`FileSync running on http://${host}:${config.webPort}/ui`);
 
   const shutdown = async () => {
-    await watcher.stop();
+    await watcher?.stop();
     pubsub?.stop();
     await app.close();
     db.close();
