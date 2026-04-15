@@ -107,45 +107,47 @@ jobs:
       - name: Prepare config and data directories
         run: |
           mkdir -p /tmp/e2e/{config-a,config-b,data-a,data-b}
+          # 给容器内的 app 用户（UID 不同于 GHA runner）写权限
+          chmod 777 /tmp/e2e/config-a /tmp/e2e/config-b /tmp/e2e/data-a /tmp/e2e/data-b
           # 两个节点使用相同加密密钥，保证跨节点解密可用
           E2E_KEY="e2e-shared-encryption-key-for-testing-only"
 
-          cat >/tmp/e2e/config-a/config.json <<EOF
-          {
-            "name": "node-a",
-            "webPort": 8384,
-            "webAuth": { "username": "", "passwordHash": "" },
-            "encryptionKey": "$E2E_KEY",
-            "syncFolders": [
-              {
-                "id": "e2e-folder",
-                "syncId": "e2e-test-sync",
-                "localPath": "/data",
-                "historyCount": 5,
-                "encrypt": true
-              }
-            ]
-          }
-          EOF
+          cat >/tmp/e2e/config-a/config.json <<'JSONEOF'
+{
+  "name": "node-a",
+  "webPort": 8384,
+  "webAuth": { "username": "", "passwordHash": "" },
+  "encryptionKey": "e2e-shared-encryption-key-for-testing-only",
+  "syncFolders": [
+    {
+      "id": "e2e-folder",
+      "syncId": "e2e-test-sync",
+      "localPath": "/data",
+      "historyCount": 5,
+      "encrypt": true
+    }
+  ]
+}
+JSONEOF
 
-          cat >/tmp/e2e/config-b/config.json <<EOF
-          {
-            "name": "node-b",
-            "webPort": 8384,
-            "webAuth": { "username": "", "passwordHash": "" },
-            "encryptionKey": "$E2E_KEY",
-            "syncFolders": [
-              {
-                "id": "e2e-folder",
-                "syncId": "e2e-test-sync",
-                "localPath": "/data",
-                "historyCount": 5,
-                "encrypt": true
-              }
-            ]
-          }
-          EOF
-          echo "Config files created"
+          cat >/tmp/e2e/config-b/config.json <<'JSONEOF'
+{
+  "name": "node-b",
+  "webPort": 8384,
+  "webAuth": { "username": "", "passwordHash": "" },
+  "encryptionKey": "e2e-shared-encryption-key-for-testing-only",
+  "syncFolders": [
+    {
+      "id": "e2e-folder",
+      "syncId": "e2e-test-sync",
+      "localPath": "/data",
+      "historyCount": 5,
+      "encrypt": true
+    }
+  ]
+}
+JSONEOF
+          echo "Config files created:"
           cat /tmp/e2e/config-a/config.json
 
       # ─────────────────────────────────────────
@@ -179,6 +181,16 @@ jobs:
             -e FILESYNC_DEV_AUTO_TRUST=true \
             ghcr.io/smellgamed3/filesync-kubo:latest
           echo "FileSync node B started"
+
+      # 短暂等待后检查容器是否存活
+      - name: Check containers are running
+        run: |
+          sleep 4
+          docker ps -a --filter "name=filesync"
+          echo "=== filesync-a early logs ==="
+          docker logs filesync-a 2>&1 || true
+          echo "=== filesync-b early logs ==="
+          docker logs filesync-b 2>&1 || true
 
       # ─────────────────────────────────────────
       # 9. 等待两个 FileSync 节点 HTTP API 就绪
