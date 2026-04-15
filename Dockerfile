@@ -1,8 +1,10 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-RUN apk add --no-cache python3 make g++
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories \
+    && apk add --no-cache python3 make g++
 COPY package*.json ./
-RUN npm ci
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm ci
 
 FROM node:22-alpine AS build
 WORKDIR /app
