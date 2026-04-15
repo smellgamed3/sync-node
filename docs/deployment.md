@@ -1,210 +1,236 @@
 # 部署与使用指南
 
-本文档面向实际部署、日常使用和联调验收，内容与当前工作区内已经实现并验证过的项目一致。
+> 当前版本：**v0.1.7**  
+> 本文档面向生产部署和日常使用，所有命令均已在真实 Kubo 环境下验证。
 
 ---
 
-## 1. 文档说明
+## 1. 概述
 
-### 适用范围
+每个 FileSync 节点由两个进程组成：
 
-本指南适用于以下场景：
+| 进程 | 职责 |
+|------|------|
+| **Kubo daemon** | 内容寻址存储、PubSub 消息总线、P2P swarm 连接 |
+| **FileSync 服务** | 目录监听、加密、版本管理、同步引擎、Web 控制台 |
 
-- 本地单机体验与开发调试
-- 接入真实 Kubo 的私有 IPFS 网络
-- Windows 与 Linux 服务器部署
-- Docker 方式运行服务
-- 多节点联调、测试与验收
+FileSync 通过 `IPFS_API` 环境变量与 Kubo 通信，两者可以是同机进程，也可以是同 Docker 网络中的两个容器。
 
-### 当前版本能力
+### 离线模式
 
-当前版本已经完成并验证：
-
-- 服务启动与配置文件自动生成
-- SQLite 文件索引与历史版本索引
-- AES-256-GCM 内容加密解密
-- 文件新增、修改、删除同步核心逻辑
-- 节点发现、双向信任、状态回补、冲突处理
-- Web 状态页与只读 API
-- 单元测试与多节点集成测试
-
-> 说明：当前 Web 页面以状态查看为主，目录配置和部署参数主要通过配置文件管理。
+若 Kubo 不可用，FileSync 自动降级为内存模式启动——Web 控制台可用，但文件不会真正同步。适合 UI 开发和配置调试。
 
 ---
 
-## 2. 运行架构
+## 2. Kubo 版本要求
 
-每个节点包含两部分：
+> **⚠️ 必须使用 Kubo v0.32.0**
 
-1. **Kubo / IPFS Daemon**
-   - 提供内容寻址、块存储、PubSub 与 P2P 连接。
-2. **FileSync 服务**
-   - 提供目录监听、文件加密、版本管理、同步引擎、Web 控制台。
-
-默认情况下，服务会优先连接本地 Kubo API：
-
-- 默认地址：`http://127.0.0.1:5001/api/v0`
-
-如果没有可用的 Kubo 服务，程序仍可启动，但会进入**离线内存模式**，适合本地开发与界面调试，不适合真实多节点同步。
+经测试，Kubo v0.40.1 存在 bitswap 协议协商缺陷：`swarm/peers` 显示连接正常，但实际无法交换数据块，所有 `ipfs cat` 超时。v0.32.0 正常工作。
 
 ---
 
 ## 3. 环境要求
 
-### 必需环境
+### 生产部署（Docker 方式）
 
-- Node.js 20 及以上
-- npm 10 及以上
-- Windows PowerShell 或 Linux Shell
+- Docker 24+
+- Docker Compose v2
 
-### 推荐环境
+### npm 方式
 
-- Kubo 0.33.x 或兼容版本
-- 两台或以上可互联的主机，用于真实多节点验证
-
-### 已验证的项目命令
-
-```bash
-npm install -g filesync-kubo
-filesync-kubo
-npm run build
-npm test
-npm run test:integration
-npm run publish:pack
-```
+- Node.js 20+
+- npm 10+
+- Kubo v0.32.0（独立安装）
 
 ---
 
-## 4. 项目目录说明
+## 4. 环境变量
 
-```text
-sync-node/
-├── docs/                   # 文档
-├── src/                    # 源码
-├── tests/                  # 自动化测试
-├── scripts/                # 启动与安装脚本
-├── package.json            # 项目脚本
-├── docker-compose.yml      # Docker 运行配置
-└── Dockerfile              # 容器镜像构建文件
-```
-
-运行后还会生成本地配置目录：
-
-- 默认配置目录：`~/.filesync`
-- Windows 下一般为：`C:\Users\<用户名>\.filesync`
-- 其中包含：
-  - `config.json`：主配置文件
-  - `filesync.db`：SQLite 索引数据库
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `IPFS_API` | `http://127.0.0.1:5001/api/v0` | Kubo HTTP API 地址 |
+| `FILESYNC_HOME` | `~/.filesync` | 配置文件与数据库目录 |
+| `FILESYNC_HOST` | `127.0.0.1` | Web 服务监听地址（容器内设为 `0.0.0.0`） |
+| `FILESYNC_ANNOUNCE_INTERVAL` | `30000` | 节点广播周期（毫秒），影响新节点发现速度 |
 
 ---
 
-## 5. 快速开始
+## 5. Docker 部署（推荐）
 
-### 5.1 按已发布地址直接安装
+### 5.1 单节点快速启动
 
-默认推荐方式是不拉源码，直接从已发布包安装。
-
-#### 从 npm 网站安装
+直接使用 GHCR 预构建镜像，搭配本机已运行的 Kubo：
 
 ```bash
+docker run -d --name filesync \
+  -p 8384:8384 \
+  -e IPFS_API=http://host.docker.internal:5001/api/v0 \
+  -e FILESYNC_HOME=/app/.filesync \
+  -v filesync_data:/app/.filesync \
+  -v /path/to/sync:/sync \
+  ghcr.io/smellgamed3/filesync-kubo:latest
+```
+
+访问：http://127.0.0.1:8384/ui
+
+### 5.2 Kubo + FileSync 同 Compose 部署（推荐生产）
+
+创建如下目录结构：
+
+```
+mynode/
+├── docker-compose.yml
+├── kubo-init/
+│   └── 001-config.sh
+└── sync-data/          ← 实际同步目录
+```
+
+**`kubo-init/001-config.sh`**（Kubo 启动前自动执行）：
+
+```sh
+#!/bin/sh
+ipfs config --bool Pubsub.Enabled true
+ipfs config Addresses.API "/ip4/0.0.0.0/tcp/5001"
+# 私有网络：清空公网 bootstrap
+ipfs bootstrap rm --all
+# 添加对等节点（生产环境替换为真实对端地址）
+# ipfs bootstrap add /ip4/<peer-ip>/tcp/4001/p2p/<peer-id>
+```
+
+```bash
+chmod +x kubo-init/001-config.sh
+```
+
+**`docker-compose.yml`**：
+
+```yaml
+services:
+  kubo:
+    image: ipfs/kubo:v0.32.0
+    restart: unless-stopped
+    volumes:
+      - kubo_data:/data/ipfs
+      - ./kubo-init:/container-init.d:ro
+    ports:
+      - "4001:4001"          # swarm（多节点互联需对外开放）
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  filesync:
+    image: ghcr.io/smellgamed3/filesync-kubo:latest
+    restart: unless-stopped
+    depends_on:
+      kubo:
+        condition: service_healthy
+    environment:
+      - IPFS_API=http://kubo:5001/api/v0
+      - FILESYNC_HOME=/app/.filesync
+    volumes:
+      - filesync_data:/app/.filesync
+      - ./sync-data:/sync          # 映射同步目录
+    ports:
+      - "8384:8384"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8384/api/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  kubo_data:
+  filesync_data:
+```
+
+启动：
+
+```bash
+docker compose up -d
+docker compose logs -f filesync    # 查看日志
+```
+
+### 5.3 多节点部署
+
+每台机器独立运行一套 Kubo + FileSync。关键要求：
+
+1. 所有节点的 **`syncId`** 相同（标识同一份数据）
+2. 所有节点的 **`encryptionKey`** 相同（内容加密密钥）
+3. Kubo 节点之间能互通 **TCP 4001 端口**
+4. `kubo-init/001-config.sh` 中通过 `ipfs bootstrap add` 互相添加对端
+
+节点 A 和 B 的配置文件示例：
+
+**节点 A（`~/.filesync/config.json`）**：
+```json
+{
+  "name": "node-a",
+  "webPort": 8384,
+  "webAuth": { "username": "admin", "passwordHash": "" },
+  "encryptionKey": "共享密钥，所有节点必须完全一致",
+  "syncFolders": [
+    {
+      "id": "docs",
+      "syncId": "team-docs",
+      "localPath": "/sync",
+      "historyCount": 5,
+      "encrypt": true
+    }
+  ]
+}
+```
+
+**节点 B** 配置相同，仅 `name` 可不同，`syncId` 和 `encryptionKey` 必须一致。
+
+---
+
+## 6. npm 部署
+
+### 6.1 安装
+
+```bash
+# 从 npmjs（公共包）
 npm install -g filesync-kubo
-```
 
-安装完成后可直接启动：
-
-```bash
-filesync-kubo
-```
-
-#### 从 GitHub Packages 安装
-
-包已发布至 GitHub Packages，使用以下命令安装：
-
-```bash
+# 从 GitHub Packages（带 scope）
 npm config set @smellgamed3:registry https://npm.pkg.github.com
 npm install -g @smellgamed3/filesync-kubo
+```
+
+### 6.2 启动
+
+```bash
+# 前台运行
 filesync-kubo
+
+# 指定配置目录
+FILESYNC_HOME=/data/filesync filesync-kubo
+
+# 容器外连接本机 Kubo（非默认端口时）
+IPFS_API=http://127.0.0.1:5001/api/v0 filesync-kubo
 ```
 
-#### 从已发布 tarball 地址安装
-
-如果你的发布系统提供的是 `.tgz` 文件地址，也可以直接安装：
+### 6.3 配置 Kubo（非 Docker 场景）
 
 ```bash
-npm install -g <已发布的tgz地址>
-```
-
-例如：
-
-```bash
-npm install -g https://your-registry.example.com/filesync-kubo-0.1.0.tgz
-```
-
-安装完成后同样可直接运行：
-
-```bash
-filesync-kubo
-```
-
-### 5.2 首次启动结果
-
-程序首次启动后会自动生成本地配置目录与配置文件。
-
-启动成功后访问：
-
-- `http://127.0.0.1:8384/ui`
-
-状态页会展示：
-
-- 节点名称
-- 运行状态
-- 已发现节点
-- 同步目录配置
-- 已索引文件列表
-
-### 5.3 如需源码方式运行
-
-仅在开发调试时使用源码方式：
-
-#### Windows PowerShell
-
-```powershell
-cd D:\code\sync-node
-npm install
-npm run build
-npm start
-```
-
-#### Linux / macOS
-
-```bash
-cd /path/to/sync-node
-npm install
-npm run build
-npm start
+ipfs init --profile server
+ipfs config --bool Pubsub.Enabled true
+ipfs config Addresses.API "/ip4/127.0.0.1/tcp/5001"
+ipfs bootstrap rm --all
+# 添加对端节点
+# ipfs bootstrap add /ip4/<peer-ip>/tcp/4001/p2p/<peer-id>
+ipfs daemon
 ```
 
 ---
 
-## 6. 配置文件说明
+## 7. 配置文件说明
 
-程序首次启动时会自动生成配置文件。
+**路径**：`$FILESYNC_HOME/config.json`（默认 `~/.filesync/config.json`）
 
-### 6.1 配置文件位置
-
-默认路径：
-
-```text
-~/.filesync/config.json
-```
-
-也可以通过环境变量指定：
-
-```bash
-FILESYNC_HOME=/custom/path/.filesync
-```
-
-### 6.2 示例配置
+首次启动自动生成。
 
 ```json
 {
@@ -214,440 +240,143 @@ FILESYNC_HOME=/custom/path/.filesync
     "username": "admin",
     "passwordHash": ""
   },
-  "encryptionKey": "请在首次节点配置后保持互信节点一致",
+  "encryptionKey": "32字节以上随机字符串，互信节点必须一致",
   "syncFolders": [
     {
-      "id": "notes-folder",
-      "localPath": "D:/sync/notes",
-      "syncId": "team-notes",
-      "include": ["**/*"],
-      "exclude": ["**/.git/**", "**/node_modules/**"],
+      "id": "my-docs",
+      "syncId": "team-docs",
+      "localPath": "/sync",
       "historyCount": 5,
-      "encrypt": true
+      "encrypt": true,
+      "include": [],
+      "exclude": ["**/.git/**", "**/node_modules/**"]
     }
   ]
 }
 ```
 
-### 6.3 字段说明
+### 字段说明
 
 | 字段 | 说明 |
-| --- | --- |
-| `name` | 节点显示名称 |
-| `webPort` | Web 页面与 API 端口 |
-| `webAuth.username` | Basic Auth 用户名 |
-| `webAuth.passwordHash` | 密码的 SHA-256 十六进制摘要；留空则不鉴权 |
-| `encryptionKey` | 文件加密密钥，互信节点必须保持一致 |
-| `syncFolders` | 本机要同步的目录列表 |
-| `syncFolders[].localPath` | 本机绝对路径 |
-| `syncFolders[].syncId` | 跨节点共享的同步标识，必须一致 |
-| `include/exclude` | 文件过滤规则 |
-| `historyCount` | 历史版本保留数量 |
-| `encrypt` | 是否启用应用层加密 |
+|------|------|
+| `name` | 节点显示名（在对端 Web 控制台可见） |
+| `webPort` | Web 服务端口，默认 8384 |
+| `webAuth.username` | Basic Auth 用户名，留空不鉴权 |
+| `webAuth.passwordHash` | 密码的 SHA-256 十六进制，见下方生成命令 |
+| `encryptionKey` | 内容加密密钥，**所有互信节点必须一致** |
+| `syncFolders[].syncId` | 跨节点同步标识，**所有互信节点必须一致** |
+| `syncFolders[].localPath` | 本机同步目录绝对路径 |
+| `syncFolders[].historyCount` | 保留历史版本数量 |
+| `syncFolders[].encrypt` | 是否启用应用层加密 |
+| `include` / `exclude` | glob 过滤规则，优先 include |
 
-### 6.4 生成 Web 密码哈希
-
-如果希望启用登录认证，可以先生成密码摘要：
+### 生成密码哈希
 
 ```bash
-node --input-type=module -e "import { createHash } from 'node:crypto'; console.log(createHash('sha256').update('你的密码').digest('hex'))"
-```
-
-将输出结果写入 `passwordHash` 字段即可。
-
----
-
-## 7. 连接真实 Kubo 私有网络
-
-如果要进行真实多节点同步，建议按以下顺序部署。
-
-### 7.1 在每台机器安装 Kubo
-
-确认以下命令可用：
-
-```bash
-ipfs version
-```
-
-### 7.2 初始化仓库
-
-```bash
-ipfs init --profile server
-```
-
-### 7.3 生成或复制私有网络密钥
-
-在一台机器生成 `swarm.key`，然后复制到其他所有节点的 IPFS 数据目录。
-
-关键要求：
-
-- **所有节点必须使用同一个 `swarm.key`**
-- 权限应仅允许当前用户读取
-
-### 7.4 安全配置建议
-
-```bash
-ipfs config Addresses.API /ip4/127.0.0.1/tcp/5001
-ipfs config Addresses.Gateway /ip4/127.0.0.1/tcp/8080
-ipfs config --bool Pubsub.Enabled true
-ipfs bootstrap rm --all
-```
-
-然后按需添加私有网络中的种子节点：
-
-```bash
-ipfs bootstrap add /ip4/<seed-ip>/tcp/4001/p2p/<peer-id>
-```
-
-### 7.5 启动 Kubo
-
-```bash
-ipfs daemon --enable-pubsub-experiment
-```
-
-如果 API 端口不是默认值，需要在启动 FileSync 前设置：
-
-```bash
-IPFS_API=http://127.0.0.1:5001/api/v0
+node --input-type=module -e \
+  "import{createHash}from'node:crypto';console.log(createHash('sha256').update('你的密码').digest('hex'))"
 ```
 
 ---
 
-## 8. 多节点部署步骤
+## 8. Web 控制台与 API
 
-下面以 Node A 和 Node B 为例说明。
+启动后访问 **http://127.0.0.1:8384/ui**
 
-### 8.1 各节点统一准备
-
-每个节点都需要：
-
-- 安装项目依赖
-- 启动自己的 Kubo daemon
-- 使用同一个 `swarm.key`
-- 配置相同的 `syncId`
-- 配置相同的 `encryptionKey`
-
-### 8.2 节点 A 配置示例
-
-```json
-{
-  "name": "node-a",
-  "webPort": 8384,
-  "webAuth": { "username": "admin", "passwordHash": "" },
-  "encryptionKey": "同一组互信节点必须一致",
-  "syncFolders": [
-    {
-      "id": "folder-a",
-      "localPath": "/data/shared",
-      "syncId": "shared-docs",
-      "historyCount": 5,
-      "encrypt": true
-    }
-  ]
-}
-```
-
-### 8.3 节点 B 配置示例
-
-```json
-{
-  "name": "node-b",
-  "webPort": 8384,
-  "webAuth": { "username": "admin", "passwordHash": "" },
-  "encryptionKey": "同一组互信节点必须一致",
-  "syncFolders": [
-    {
-      "id": "folder-b",
-      "localPath": "/data/shared",
-      "syncId": "shared-docs",
-      "historyCount": 5,
-      "encrypt": true
-    }
-  ]
-}
-```
-
-### 8.4 启动顺序建议
-
-1. 先启动所有节点的 Kubo
-2. 确认节点已加入同一私有网络
-3. 再启动每个节点的 FileSync 服务
-4. 打开各自的 Web 状态页确认服务正常
+| 端点 | 说明 |
+|------|------|
+| `GET /api/status` | 服务状态（peerId、kuboAvailable） |
+| `GET /api/nodes` | 已发现节点及信任状态 |
+| `GET /api/folders` | 同步目录配置 |
+| `GET /api/files` | 当前文件索引（CID、版本、大小） |
+| `GET /api/config` | 配置摘要（不含密钥） |
+| `POST /api/nodes/:id/trust` | 设置节点信任关系 |
 
 ---
 
-## 9. Docker 部署
+## 9. 信任关系管理
 
-当前项目支持两种容器使用方式：
+新节点发现后**默认不信任**，需手动确认（或在测试环境开启 `FILESYNC_DEV_AUTO_TRUST=true`）。
 
-1. 本地源码构建镜像
-2. 直接拉取 GHCR 已发布镜像
-
-### 9.1 本地构建并运行
+通过 API 手动信任：
 
 ```bash
-docker compose up --build -d
+curl -X POST http://127.0.0.1:8384/api/nodes/<peer-id>/trust \
+  -H "Content-Type: application/json" \
+  -d '{"trust": "trusted"}'
 ```
 
-### 9.2 从 GHCR 直接运行
-
-```bash
-docker pull ghcr.io/smellgamed3/filesync-kubo:latest
-docker run -d -p 8384:8384 -e FILESYNC_HOME=/app/.filesync ghcr.io/smellgamed3/filesync-kubo:latest
-```
-
-### 9.3 访问地址
-
-```text
-http://127.0.0.1:8384/ui
-```
-
-### 9.4 注意事项
-
-- 当前 Compose 默认把 `IPFS_API` 指向宿主机地址
-- 如使用真实多节点，需确保容器可以访问宿主机或独立 IPFS 容器
-- 配置目录卷建议持久化保存
-- GHCR 镜像地址：`ghcr.io/smellgamed3/filesync-kubo:latest`
+互信完成（双方都信任对方）后自动触发状态回补，同步对端已有文件。
 
 ---
 
-## 10. 打包与发布
+## 10. 生产运维建议
 
-### 10.1 发布目标
+### 持久化
 
-当前项目已提供自动打包发布脚本，执行流程为：
+- `kubo_data` volume：Kubo IPFS 仓库（包含 swarm 密钥和块存储）
+- `filesync_data` volume：配置文件和 SQLite 索引数据库
+- 同步目录建议 bind mount 到宿主机可访问路径
 
-1. 运行 `npm pack` 生成 `.tgz` 包文件
-2. 自动复制到：`~/svc/share/files/npm/<@scope>/<package>/`
-
-### 10.2 推荐命令
-
-```bash
-npm run publish:pack
-```
-
-### 10.3 用户安装方式
-
-发布完成后，用户侧推荐直接按已发布地址安装。
-
-#### 方式一：从 npm 网站安装
+### 日志
 
 ```bash
-npm install -g filesync-kubo
-filesync-kubo
+docker compose logs filesync    # 实时日志
+docker compose logs kubo        # Kubo 日志
 ```
 
-#### 方式二：从已发布 tgz 地址安装
+### 备份
+
+定期备份：
+- `~/.filesync/config.json`（含密钥）
+- `~/.filesync/filesync.db`（文件索引）
+
+### IPFS GC
+
+定期清理未引用的 IPFS 数据块：
 
 ```bash
-npm install -g <已发布的tgz地址>
-filesync-kubo
-```
-
-#### 方式三：临时运行
-
-```bash
-npx filesync-kubo
-```
-
-### 10.4 发布者操作
-
-若你是发布方，可采用以下流程：
-
-```bash
-npm login
-npm run publish:npm:dry-run
-npm run publish:npm
-```
-
-如果后续将包名改为带 scope 的公共包，例如 `@org/filesync-kubo`，建议使用：
-
-```bash
-npm publish --access public
-```
-
-### 10.4 路径规则
-
-- 若 `package.json` 中是 scoped 包名，例如 `@org/demo`，目标路径为：
-  `~/svc/share/files/npm/@org/demo/`
-- 若当前是非 scoped 包，则默认路径为：
-  `~/svc/share/files/npm/filesync-kubo/`
-- 若希望强制发布到某个 scope，可设置环境变量：
-
-```bash
-NPM_SCOPE=@org npm run publish:pack
-```
-
-### 10.5 Windows PowerShell
-
-```powershell
-./scripts/publish-pack.ps1
-```
-
-也可以指定 scope：
-
-```powershell
-./scripts/publish-pack.ps1 -Scope @org
-```
-
-### 10.6 Linux Shell
-
-```bash
-./scripts/publish-pack.sh
-```
-
-### 10.7 自定义发布根目录
-
-默认发布根目录为：
-
-```text
-~/svc/share/files/npm
-```
-
-如需改为其他目录，可以设置环境变量：
-
-```bash
-NPM_SHARE_ROOT=/data/npm-share npm run publish:pack
-```
-
-## 11. 日常使用说明
-
-### 10.1 查看运行状态
-
-打开浏览器访问：
-
-- `/ui`：简洁控制台页面
-- `/api/status`：服务状态
-- `/api/nodes`：已发现节点列表
-- `/api/folders`：同步目录配置
-- `/api/files`：当前文件索引
-- `/api/config`：当前服务配置摘要
-
-### 10.2 添加同步目录
-
-当前版本推荐直接编辑配置文件中的 `syncFolders` 数组，然后重启服务。
-
-配置时请注意：
-
-- `localPath` 必须是本机存在的绝对路径
-- 不同节点使用相同 `syncId` 才会被视为同一份同步数据
-- 若启用了 `encrypt`，则相关节点的 `encryptionKey` 必须一致
-
-### 10.3 触发同步
-
-目录被加入配置并启动服务后：
-
-- 新增文件会自动入库并同步
-- 修改文件会更新版本并通知互信节点
-- 删除文件会向互信节点广播删除事件
-
-### 10.4 过滤规则
-
-可以通过 `include` 和 `exclude` 控制同步范围：
-
-```json
-{
-  "include": ["docs/**", "notes/**"],
-  "exclude": ["**/.git/**", "**/*.tmp"]
-}
+curl -X POST http://127.0.0.1:5001/api/v0/repo/gc
 ```
 
 ---
 
-## 11. 安全建议
+## 11. 常见问题
 
-### 11.1 网络层
+### kuboAvailable: false
 
-- 使用私有 `swarm.key` 隔离网络
-- 不要向公网暴露 Kubo API
-- 尽量仅绑定回环地址 `127.0.0.1`
+Kubo API 不可达。检查：
+1. `ipfs daemon` 或 kubo 容器是否已启动
+2. `IPFS_API` 地址和端口是否正确
+3. 容器部署时确认 `IPFS_API=http://kubo:5001/api/v0`（用容器服务名而非 localhost）
 
-### 11.2 应用层
+### 节点发现了但不同步文件
 
-- 生产环境必须配置 `webAuth.passwordHash`
-- 互信节点之间要安全保存同一份 `encryptionKey`
-- 避免将配置目录提交到代码仓库
+按序检查：
+1. 双方是否已建立**互信**（`/api/nodes` 中 `trust=trusted` 且 `trusts_me=1`）
+2. `syncId` 是否一致
+3. `encryptionKey` 是否一致
+4. Kubo 节点间 swarm 是否已连通（各自 `ipfs swarm peers` 能看到对端）
 
-### 11.3 数据层
+### ipfs cat 超时
 
-- 定期备份 `config.json` 与 `filesync.db`
-- 必要时执行 IPFS GC 清理未引用块
-- 历史版本数量不宜设置过大
-
----
-
-## 12. 验证与验收
-
-### 12.1 本地验收命令
-
+Kubo 版本问题，确认使用 v0.32.0。验证：
 ```bash
-npm run build
-npm test
-npm run test:integration
+docker exec <kubo容器> ipfs version
+curl -X POST http://127.0.0.1:5001/api/v0/bitswap/stat
+# Peers 字段应在 swarm 连通后非空
 ```
 
-### 12.2 已覆盖的验证项
+### 文件解密失败
 
-- 配置文件生成与读取
-- 加密与解密正确性
-- 冲突解决策略
-- 文件新增、修改、删除流程
-- 节点发现与信任门禁
-- 状态回补
-- Web API 鉴权与查询
-- 多节点集成同步
+各节点 `encryptionKey` 不一致。需保证所有节点配置完全相同的密钥字符串。
 
 ---
 
-## 13. 常见问题排查
-
-### 问题 1：页面能打开，但显示 `kuboAvailable: false`
-
-原因：FileSync 未连上 Kubo API。
-
-排查步骤：
-
-1. 检查 `ipfs daemon` 是否已启动
-2. 检查 API 是否监听在 `127.0.0.1:5001`
-3. 检查环境变量 `IPFS_API` 是否配置正确
-
-### 问题 2：多节点之间看不到文件同步
-
-优先检查：
-
-- 是否使用同一个 `swarm.key`
-- 是否处于同一私有网络
-- 是否配置了相同的 `syncId`
-- 是否使用相同的 `encryptionKey`
-- 是否已建立互信关系
-- 文件路径是否被 `include/exclude` 规则过滤掉
-
-### 问题 3：文件内容无法正确解密
-
-通常原因是：
-
-- 各节点 `encryptionKey` 不一致
-- 文件被非预期节点修改后重新加密
-
-### 问题 4：服务启动后没有任何同步目录
-
-原因通常是 `syncFolders` 为空，或 `localPath` 指向的目录不存在。
-
----
-
-## 14. 运维建议
-
-- 使用系统服务或计划任务实现开机自启
-- 将 Kubo 与 FileSync 进程日志分开保存
-- 对业务同步目录和配置目录分别做备份
-- 建议先在测试环境完成双节点验收，再推广到更多节点
-
----
-
-## 15. 推荐阅读
+## 12. 推荐阅读
 
 - [系统架构](./architecture.md)
 - [同步流程](./sync-flow.md)
-- [模块设计](./modules.md)
-- [开发测试验收](./acceptance.md)
 - [GitHub 发布与分发](./release-publish.md)
+- [开发调试经验](./dev-debug-testing-notes.md)
+

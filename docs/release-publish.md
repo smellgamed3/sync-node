@@ -1,160 +1,179 @@
 # GitHub 发布与分发指南
 
-本文档说明如何将本项目推送到 GitHub，并通过 GitHub Actions 自动完成：
+> 当前版本：**v0.1.7**
 
-- 持续集成测试
-- 容器镜像发布到 GHCR
-- npm 包发布到 GitHub Packages
-- npm tarball 附件发布到 GitHub Release
+本文档说明三阶段发布工作流、GitHub Actions 自动化配置，以及各分发渠道的使用方式。
 
-## 1. 仓库准备
+---
 
-建议在 GitHub 上创建仓库后，将本地项目推送到默认分支。
+## 1. 三阶段发布工作流
 
-建议仓库名：
+所有发布均遵循以下流程，确保推送到 GitHub 前本地已充分验证：
 
-- sync-node
-- filesync-kubo
+```
+阶段一：本地全量测试
+  npm run pre-release
+    ├── npm run build
+    ├── npm test              # 7 项单元/集成测试
+    ├── npm run e2e:docker    # Docker E2E（使用本地构建镜像）
+    └── npm run e2e:npm       # npm E2E（使用 npm pack tarball）
 
-## 2. 已加入的自动化工作流
+阶段二：推送触发远程构建
+  git push && git push --tags
+    └── GitHub Actions:
+          ├── ci.yml          # 构建 + 单元测试
+          └── release.yml     # 构建 + 发布到 GHCR / npmjs / GitHub Packages
 
-项目已包含两个工作流：
-
-- `.github/workflows/ci.yml`
-- `.github/workflows/release.yml`
-
-### CI 工作流
-
-触发时机：
-
-- push 到主分支
-- pull request
-
-执行内容：
-
-- 安装依赖
-- 构建
-- 运行测试
-
-### Release 工作流
-
-触发时机：
-
-- 推送版本标签，例如 `v0.1.0`
-- 手动触发
-
-执行内容：
-
-- 构建与测试
-- 生成 npm tarball
-- 上传到 GitHub Release
-- 构建并推送 GHCR 镜像
-- 发布 npmjs 包
-- 发布 GitHub Packages 包
-
-## 3. 需要的 GitHub Secrets
-
-如果要完整启用发布功能，建议在仓库 Secrets 中配置：
-
-### 必需
-
-- `NPM_TOKEN`：用于发布到 npmjs.org
-
-### 默认可用
-
-- `GITHUB_TOKEN`：GitHub Actions 自动提供，用于：
-  - 推送 GHCR 镜像
-  - 发布 GitHub Packages
-  - 创建 GitHub Release
-
-## 4. GHCR 镜像地址
-
-镜像发布后，可按以下格式拉取：
-
-```text
-ghcr.io/smellgamed3/filesync-kubo:latest
+阶段三：本地验证发布结果
+  npm run post-release
+    ├── npm run e2e:post-docker   # 从 GHCR 拉取并 E2E 验证
+    └── npm run e2e:post-npm      # 从 npmjs 安装并 E2E 验证
 ```
 
-已发布版本：
+### 快速发布命令
+
+```bash
+# 阶段一：本地全量 E2E
+npm run pre-release
+
+# 更新版本号并提交
+npm version patch   # 或 minor / major
+git push && git push --tags
+
+# 阶段三：验证远端构建结果（发布完成约 5 分钟后执行）
+npm run post-release
+```
+
+---
+
+## 2. GitHub Actions 工作流
+
+### CI 工作流（`ci.yml`）
+
+**触发时机**：push 到主分支、Pull Request
+
+**执行内容**：
+- Node.js 环境安装依赖
+- `npm run build`
+- `npm test`
+
+### Release 工作流（`release.yml`）
+
+**触发时机**：推送版本标签（`v*.*.*`）
+
+**执行内容**：
+1. 构建与单元测试
+2. 生成 npm tarball 附件，上传到 GitHub Release
+3. 构建并推送 GHCR 容器镜像（`:latest` + 版本标签）
+4. 发布到 npmjs（`filesync-kubo`）
+5. 发布到 GitHub Packages（`@smellgamed3/filesync-kubo`）
+
+### E2E 远端工作流（`e2e-published.yml`）
+
+**触发时机**：手动触发（`workflow_dispatch`）
+
+**执行内容**：基础 E2E 冒烟测试，验证已发布镜像可用性。使用 `ipfs/kubo:v0.32.0`。
+
+---
+
+## 3. 已发布版本（v0.1.7）
+
+| 渠道 | 地址 | 版本 |
+|------|------|------|
+| Docker（GHCR） | `ghcr.io/smellgamed3/filesync-kubo` | `latest`, `v0.1.7` |
+| npmjs | `filesync-kubo` | `0.1.7` |
+| GitHub Packages | `@smellgamed3/filesync-kubo` | `0.1.7` |
+| GitHub Release | [Releases 页面](https://github.com/smellgamed3/sync-node/releases) | v0.1.7 |
+
+---
+
+## 4. 各渠道安装方式
+
+### Docker（推荐生产）
 
 ```bash
 docker pull ghcr.io/smellgamed3/filesync-kubo:latest
-docker run -d -p 8384:8384 ghcr.io/smellgamed3/filesync-kubo:latest
+docker run -d -p 8384:8384 \
+  -e IPFS_API=http://host.docker.internal:5001/api/v0 \
+  -e FILESYNC_HOME=/app/.filesync \
+  -v filesync_data:/app/.filesync \
+  ghcr.io/smellgamed3/filesync-kubo:latest
 ```
 
-## 5. 从 GitHub Packages 安装 npm 包
+### npmjs
 
-GitHub Packages 通常使用带 scope 的包名。工作流会自动将包名转换为：
-
-```text
-@smellgamed3/filesync-kubo
+```bash
+npm install -g filesync-kubo
+filesync-kubo
 ```
 
-用户安装：
+### GitHub Packages
 
 ```bash
 npm config set @smellgamed3:registry https://npm.pkg.github.com
 npm install -g @smellgamed3/filesync-kubo
-```
-
-安装后启动：
-
-```bash
 filesync-kubo
 ```
 
-## 6. 推荐发布步骤
+---
 
-### 第一步：本地检查
+## 5. 必需的 GitHub Secrets
 
-```bash
-npm run build
-npm test
-npm run publish:npm:dry-run
-```
+| Secret | 用途 | 来源 |
+|--------|------|------|
+| `NPM_TOKEN` | 发布到 npmjs.org | npmjs 账号 → Access Tokens |
+| `GITHUB_TOKEN` | GHCR + GitHub Packages + Release | Actions 自动提供 |
 
-### 第二步：提交并推送到 GitHub
+配置 `NPM_TOKEN`：
+- 登录 npmjs.org → Account → Access Tokens → Generate New Token（Automation 类型）
+- 仓库 Settings → Secrets and variables → Actions → New repository secret
 
-```bash
-git add .
-git commit -m "chore: prepare github release pipeline"
-git push origin main
-```
+---
 
-### 第三步：创建标签触发正式发布
+## 6. 版本号约定
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+# 补丁版本（bugfix）
+npm version patch   # 0.1.6 → 0.1.7
+
+# 次版本（新功能）
+npm version minor   # 0.1.7 → 0.2.0
+
+# 主版本（破坏性变更）
+npm version major   # 0.1.7 → 1.0.0
 ```
 
-## 7. 发布结果
+`npm version` 命令会自动修改 `package.json`、提交、并打 git 标签。
 
-发布完成后，一般可得到三类分发地址：
+---
 
-1. **GitHub 仓库源码地址**
-2. **GHCR 容器镜像地址**
-3. **GitHub Packages npm 包地址**
-
-## 8. 故障排查
+## 7. 故障排查
 
 ### GHCR 推送失败
 
-检查：
-
-- 仓库 Actions 权限是否允许写 Packages
-- 镜像名是否符合 `ghcr.io/smellgamed3/<image>` 规则
+- 检查仓库 Actions 权限：Settings → Actions → General → Workflow permissions → 勾选 "Read and write permissions"
+- 检查 "Allow GitHub Actions to create and approve pull requests"
 
 ### npmjs 发布失败
 
-检查：
-
-- `NPM_TOKEN` 是否有效
-- 包版本是否已存在
+- 确认 `NPM_TOKEN` 有效且未过期
+- 检查包名 `filesync-kubo` 是否已被他人占用
+- 确认版本号未重复（同一版本不能重复发布）
 
 ### GitHub Packages 发布失败
 
-检查：
+- 确认 scope `@smellgamed3` 与 GitHub 用户名一致
+- 检查 `GITHUB_TOKEN` 的 `packages:write` 权限
 
-- scope 是否与 owner 一致
-- `GITHUB_TOKEN` 是否具有 packages:write 权限
+### E2E 后置测试失败（post-release）
+
+- 镜像或 npm 包可能尚未完全发布，等待 2-5 分钟后重试
+- 检查 GHCR Packages 页面确认镜像已可见
+- 检查 npmjs.com 确认版本已发布
+
+---
+
+## 8. 推荐阅读
+
+- [部署与使用指南](./deployment.md)
+- [开发调试经验](./dev-debug-testing-notes.md)
